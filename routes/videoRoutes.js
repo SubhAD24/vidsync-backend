@@ -5,12 +5,12 @@ const {
   getInfo,
   startDownload,
   getProgress,
-  downloadFile // <--- Make sure this is imported
+  downloadFile
 } = require("../controllers/videoController");
 
 router.post("/info", getInfo);
 router.post("/download", startDownload);
 router.get("/progress/:jobId", getProgress);
-router.get("/file/:jobId", downloadFile); // <--- Make sure this route exists
+router.get("/file/:jobId", downloadFile);
 
 module.exports = router;

@@ -3,7 +3,15 @@ const path = require("path");
 const fs = require("fs");
 
 const YTDLP =
-  "C:\\Users\\suvro\\AppData\\Roaming\\Python\\Scripts\\yt-dlp.exe";
+ spawn("yt-dlp", [
+  "--js-runtime", "node",
+  "--no-playlist",
+  "--merge-output-format", "mp4",
+  "-f", format,
+  "-o", "-",
+  url
+]);
+
 
 exports.downloadVideo = (req, res) => {
   const { url } = req.body;
