@@ -2,8 +2,8 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// 🟢 CRITICAL FIX: Defined correct variable with YOUR SPECIFIC PATH
-const YTDLP_BIN = "C:\\Users\\suvro\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\yt-dlp.exe";
+// 🟢 PRODUCTION PATH (As requested)
+const YTDLP_BIN = "yt-dlp"; 
 
 const jobs = {};
 
@@ -33,11 +33,12 @@ exports.getInfo = (req, res) => {
   ];
 
   // 🟢 YOUTUBE PREVIEW FIX: Use Android client to bypass "Sign In" check
+  // (Only applied to YouTube URLs to avoid breaking FB/Insta)
   if (url.includes("youtube.com") || url.includes("youtu.be")) {
      args.push("--extractor-args", "youtube:player_client=android");
   }
 
-  // 🟢 VARIABLE FIX: Using YTDLP_BIN
+  // 🟢 Using correct binary variable
   const yt = spawn(YTDLP_BIN, args);
   let raw = "";
 
@@ -87,7 +88,7 @@ exports.getInfo = (req, res) => {
   });
 };
 
-/* ───────────────── START DOWNLOAD (Fixes Failed Downloads) ───────────────── */
+/* ───────────────── START DOWNLOAD (Fixes Failed Downloads & Audio) ───────────────── */
 exports.startDownload = (req, res) => {
   const { url, quality, jobId, title, format } = req.body; 
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
@@ -131,13 +132,14 @@ exports.startDownload = (req, res) => {
        args.push("-f", "bestvideo+bestaudio/best");
     }
 
+    // This forces the final file to be standard MP4/AAC
     args.push("--recode-video", "mp4");
     jobs[jobId].msg = "Downloading Video...";
   }
 
   args.push(url);
 
-  // 🟢 VARIABLE FIX: Using YTDLP_BIN
+  // 🟢 Using correct binary variable
   const yt = spawn(YTDLP_BIN, args);
 
   yt.on("error", err => {
