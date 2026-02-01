@@ -1,14 +1,18 @@
-FROM node:20
+FROM node:20-slim
 
-RUN apt update && apt install -y ffmpeg curl
-
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-    -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp
+RUN apt-get update && apt-get install -y \
+  ffmpeg \
+  python3 \
+  python3-pip \
+  && pip3 install -U yt-dlp \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY . .
+
+COPY package*.json ./
 RUN npm install
 
-EXPOSE 5000
+COPY . .
+
+EXPOSE 8080
 CMD ["node", "server.js"]

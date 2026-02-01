@@ -1,16 +1,31 @@
 const { spawn } = require("child_process");
-const fs = require("fs");
 const path = require("path");
+const fs = require("fs");
+
+const YTDLP = "yt-dlp"; // ✅ DO NOT CHANGE
 
 const jobs = {};
 
-/* ===================== INFO ===================== */
+/* ───────────────── CLEANER ───────────────── */
+setInterval(() => {
+  const now = Date.now();
+  for (const id in jobs) {
+    if (now - jobs[id].startTime > 60 * 60 * 1000) {
+      if (jobs[id].filePath && fs.existsSync(jobs[id].filePath)) {
+        try { fs.unlinkSync(jobs[id].filePath); } catch {}
+      }
+      delete jobs[id];
+    }
+  }
+}, 10 * 60 * 1000);
+
+/* ───────────────── VIDEO INFO ───────────────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
-  const yt = spawn("yt-dlp", [
-    "--js-runtime", "node",
+  const yt = spawn(YTDLP, [
+    "--force-ipv4",
     "--no-playlist",
     "-J",
     url
@@ -19,84 +34,120 @@ exports.getInfo = (req, res) => {
   let raw = "";
 
   yt.stdout.on("data", d => raw += d.toString());
-  yt.stderr.on("data", d => console.error("[yt-dlp info]", d.toString()));
+  yt.stderr.on("data", d => console.log("[yt-dlp]", d.toString()));
 
-  yt.on("error", err => {
-    console.error("Spawn error:", err.message);
-    if (!res.headersSent) res.status(500).json({ error: "yt-dlp failed" });
-  });
+  yt.on("close", code => {
+    if (code !== 0 || !raw) {
+      return res.status(500).json({ error: "Could not fetch video info" });
+    }
 
-  yt.on("close", () => {
     try {
       const info = JSON.parse(raw);
-      const qualities = [...new Set(
-        info.formats
-          .filter(f => f.height && f.vcodec !== "none")
-          .map(f => f.height)
-      )].sort((a, b) => b - a);
+
+      const qualities = [
+        ...new Set(
+          info.formats
+            .filter(f => f.height && f.vcodec !== "none")
+            .map(f => f.height)
+        )
+      ].sort((a, b) => b - a);
 
       res.json({
         title: info.title,
         platform: info.extractor_key,
-        qualities
+        qualities,
+        thumbnail: info.thumbnail || null
       });
+
     } catch {
-      res.status(500).json({ error: "Failed to parse info" });
+      res.status(500).json({ error: "Parse error" });
     }
   });
 };
 
-/* ===================== DOWNLOAD ===================== */
+/* ───────────────── START DOWNLOAD ───────────────── */
 exports.startDownload = (req, res) => {
-  const { url, quality, jobId } = req.body;
+  const { url, quality, jobId, title } = req.body;
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
 
-  const outDir = path.join(__dirname, "..");
-  const outTemplate = path.join(outDir, `${jobId}.%(ext)s`);
+  const outputTemplate = path.join(
+    __dirname,
+    "..",
+    `${jobId}.%(ext)s`
+  );
 
   jobs[jobId] = {
     progress: 0,
     status: "starting",
-    filePath: null
+    msg: "Initializing…",
+    filePath: null,
+    title: title || "video",
+    startTime: Date.now()
   };
 
-  const yt = spawn("yt-dlp", [
-    "--js-runtime", "node",
-    "--newline",
+  const args = [
+    "--force-ipv4",
     "--no-playlist",
-    "-f", `bestvideo[height<=${quality || 1080}]+bestaudio/best`,
-    "--merge-output-format", "mp4",
-    "-o", outTemplate,
+    "--newline",
+    "--audio-multistreams",
+
+    // 🔥 FACEBOOK + INSTAGRAM + YOUTUBE SAFE FORMAT
+    "-f",
+    quality
+      ? `bv*[height<=${quality}]/bv*+ba/best`
+      : "bv*+ba/best",
+
+    "--merge-output-format",
+    "mp4",
+
+    "-o",
+    outputTemplate,
+
     url
-  ]);
+  ];
+
+  const yt = spawn(YTDLP, args);
+
+  yt.on("error", err => {
+    console.error("Spawn error:", err);
+    jobs[jobId].status = "error";
+    jobs[jobId].msg = "Engine error";
+  });
 
   yt.stdout.on("data", d => {
     const text = d.toString();
+
     const match = text.match(/(\d+\.\d+)%/);
-    if (match) jobs[jobId].progress = Number(match[1]);
-    jobs[jobId].status = "downloading";
-  });
+    if (match) {
+      jobs[jobId].progress = Number(match[1]);
+      jobs[jobId].status = "downloading";
+      jobs[jobId].msg = "Downloading…";
+    }
 
-  yt.stderr.on("data", d => console.error("[yt-dlp]", d.toString()));
-
-  yt.on("error", err => {
-    console.error("Spawn error:", err.message);
-    jobs[jobId].status = "error";
+    if (text.includes("Destination:")) {
+      const m = text.match(/Destination: (.+)$/m);
+      if (m) jobs[jobId].filePath = m[1];
+    }
   });
 
   yt.on("close", () => {
-    const file = fs.readdirSync(outDir).find(f => f.startsWith(jobId));
-    if (!file) return jobs[jobId].status = "error";
+    const files = fs.readdirSync(path.join(__dirname, ".."));
+    const found = files.find(f => f.startsWith(jobId));
 
-    jobs[jobId].filePath = path.join(outDir, file);
-    jobs[jobId].progress = 100;
-    jobs[jobId].status = "done";
+    if (found) {
+      jobs[jobId].filePath = path.join(__dirname, "..", found);
+      jobs[jobId].progress = 100;
+      jobs[jobId].status = "done";
+      jobs[jobId].msg = "Ready";
+    } else {
+      jobs[jobId].status = "error";
+    }
   });
 
   res.json({ started: true });
 };
 
-/* ===================== PROGRESS ===================== */
+/* ───────────────── PROGRESS STREAM ───────────────── */
 exports.getProgress = (req, res) => {
   const { jobId } = req.params;
 
@@ -109,7 +160,7 @@ exports.getProgress = (req, res) => {
     if (!job) {
       res.write(`data: ${JSON.stringify({ status: "error" })}\n\n`);
       clearInterval(timer);
-      return res.end();
+      return;
     }
 
     res.write(`data: ${JSON.stringify(job)}\n\n`);
@@ -121,7 +172,7 @@ exports.getProgress = (req, res) => {
   }, 500);
 };
 
-/* ===================== FILE ===================== */
+/* ───────────────── FILE DOWNLOAD ───────────────── */
 exports.downloadFile = (req, res) => {
   const { jobId } = req.params;
   const job = jobs[jobId];
@@ -130,7 +181,10 @@ exports.downloadFile = (req, res) => {
     return res.status(404).send("File not found");
   }
 
-  res.download(job.filePath, () => {
+  const safeName = job.title.replace(/[^a-z0-9 _-]/gi, "_");
+  const ext = path.extname(job.filePath);
+
+  res.download(job.filePath, `${safeName}${ext}`, () => {
     try { fs.unlinkSync(job.filePath); } catch {}
     delete jobs[jobId];
   });
