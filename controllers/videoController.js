@@ -2,7 +2,9 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-const YTDLP_BIN = "yt-dlp"; // ✅ Using System Path
+// 🟢 AS REQUESTED: Using system path
+const YTDLP_BIN = "yt-dlp";
+
 const jobs = {};
 
 /* ───────── CLEANER ───────── */
@@ -18,23 +20,22 @@ setInterval(() => {
   }
 }, 600000);
 
-/* ───────── INFO (The Fix for "Video Not Found") ───────── */
+/* ───────── INFO ───────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
+  // 🟢 CLEANEST ARGUMENTS (Restored to what worked)
   const args = [
     "--force-ipv4",
     "--no-playlist",
     "-J",
-    // 🟢 FIX 1: Fake a real browser (Helps FB/Insta)
-    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     url
   ];
 
-  // 🟢 FIX 2: Mimic Android Client (Helps YouTube)
-  // We MUST do this here, otherwise YouTube returns "Sign in required"
-  if (url.includes("youtube") || url.includes("youtu.be")) {
+  // 🟢 ONLY add this for YouTube. 
+  // If we add this for FB/Insta, it might break them.
+  if (url.includes("youtube.com") || url.includes("youtu.be")) {
      args.push("--extractor-args", "youtube:player_client=android");
   }
 
@@ -46,10 +47,11 @@ exports.getInfo = (req, res) => {
   yt.stdout.on("data", d => raw += d.toString());
   yt.stderr.on("data", d => errorLog += d.toString());
 
-  yt.on("close", () => {
-    if (!raw) {
-        console.error("Fetch Failed:", errorLog); 
-        return res.status(500).json({ error: "Video not found or blocked" });
+  yt.on("close", (code) => {
+    // Debugging: If it fails, we print WHY it failed in the terminal
+    if (code !== 0 || !raw) {
+        console.error("❌ YT-DLP Error:", errorLog); 
+        return res.status(500).json({ error: "Video not found or access denied" });
     }
 
     try {
@@ -66,16 +68,15 @@ exports.getInfo = (req, res) => {
         thumb = info.thumbnails.at(-1).url;
       }
 
-      // 🟢 SMART PREVIEW
-      // For YouTube, we return NULL because frontend handles the Iframe.
-      // For FB/Insta, we try to get the direct MP4 link.
+      // Check if it's YouTube
       const isYouTube = info.extractor.includes("youtube");
-      
-      // Find a safe preview for FB/Insta
+
+      // For FB/Insta, try to get a direct MP4 link for preview
       let previewUrl = null;
       if (!isYouTube) {
-          const mp4Format = info.formats.find(f => f.ext === 'mp4' && f.acodec !== 'none' && f.vcodec !== 'none');
-          previewUrl = mp4Format ? mp4Format.url : info.url;
+          // Try to find an MP4 file
+          const mp4 = info.formats.find(f => f.ext === 'mp4' && f.acodec !== 'none');
+          previewUrl = mp4 ? mp4.url : null;
       }
 
       res.json({
@@ -83,11 +84,12 @@ exports.getInfo = (req, res) => {
         platform: info.extractor_key,
         qualities,
         thumbnail: thumb,
-        preview: previewUrl
+        preview: previewUrl 
       });
+
     } catch (e) {
       console.error("Parse Error:", e);
-      res.status(500).json({ error: "Parse error" });
+      res.status(500).json({ error: "Server parse error" });
     }
   });
 };
@@ -111,25 +113,23 @@ exports.startDownload = (req, res) => {
       "--force-ipv4", 
       "--no-playlist", 
       "--newline", 
-      "-o", out,
-      // 🟢 FIX 1: Fake Browser for Download too
-      "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+      "-o", out
   ];
 
-  if (url.includes("youtube") || url.includes("youtu.be")) {
+  // 🟢 YOUTUBE FIX
+  if (url.includes("youtube.com") || url.includes("youtu.be")) {
     args.push("--extractor-args", "youtube:player_client=android");
   }
 
   if (format === "audio") {
     args.push("-x", "--audio-format", "mp3");
   } else {
-    // 🟢 FIX 3: Mobile Audio Logic
+    // 🟢 MOBILE AUDIO FIX (Recode to MP4)
     if (quality) {
-      args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
+       args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
     } else {
-        args.push("-f", "bestvideo+bestaudio/best");
+       args.push("-f", "bestvideo+bestaudio/best");
     }
-    // Force Recode to MP4 (Fixes "No Sound" on Mobile)
     args.push("--recode-video", "mp4");
   }
 
