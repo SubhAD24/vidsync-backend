@@ -82,7 +82,7 @@ exports.getInfo = (req, res) => {
   });
 };
 
-/* ───────── DOWNLOAD (iOS Instagram Black Screen Fix) ───────── */
+/* ───────── DOWNLOAD (iOS Fix Added) ───────── */
 exports.startDownload = (req, res) => {
   const { url, quality, jobId, title, format } = req.body;
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
@@ -112,21 +112,19 @@ exports.startDownload = (req, res) => {
   if (format === "audio") {
     args.push("-x", "--audio-format", "mp3");
   } else {
-    // 🟢 VIDEO MODE
+    // 🟢 iOS BLACK SCREEN FIX
+    // We explicitly prefer "h264" codec. iOS HATES VP9 (the default).
+    // This sorting rule tells yt-dlp to find the best H.264 video.
+    args.push("-S", "vcodec:h264");
+
     if (quality) {
        args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
     } else {
        args.push("-f", "bestvideo+bestaudio/best");
     }
-
-    // 🟢 iOS BLACK SCREEN FIX (THE NUCLEAR OPTION)
-    // 1. Force container to MP4
-    args.push("--recode-video", "mp4");
     
-    // 2. Force FFmpeg to re-encode the video pixels to H.264 and audio to AAC.
-    // This solves the issue where Instagram sends HEVC video that breaks iOS.
-    // This command runs inside the engine: "ffmpeg -c:v libx264 -c:a aac"
-    args.push("--postprocessor-args", "VideoConvertor:-c:v libx264 -c:a aac");
+    // Ensure container is always MP4
+    args.push("--recode-video", "mp4");
   }
 
   args.push(url);
