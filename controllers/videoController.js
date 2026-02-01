@@ -2,7 +2,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// 🟢 AS REQUESTED: Using system path
+// 🟢 PRODUCTION PATH (As you requested)
 const YTDLP_BIN = "yt-dlp";
 
 const jobs = {};
@@ -20,24 +20,18 @@ setInterval(() => {
   }
 }, 600000);
 
-/* ───────── INFO ───────── */
+/* ───────── INFO (Restored to Stable Version) ───────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
-  // 🟢 CLEANEST ARGUMENTS (Restored to what worked)
+  // 🟢 OLD STABLE ARGUMENTS (No extra flags that cause errors)
   const args = [
     "--force-ipv4",
     "--no-playlist",
-    "-J",
+    "-J", // Dump JSON
     url
   ];
-
-  // 🟢 ONLY add this for YouTube. 
-  // If we add this for FB/Insta, it might break them.
-  if (url.includes("youtube.com") || url.includes("youtu.be")) {
-     args.push("--extractor-args", "youtube:player_client=android");
-  }
 
   const yt = spawn(YTDLP_BIN, args);
 
@@ -48,35 +42,35 @@ exports.getInfo = (req, res) => {
   yt.stderr.on("data", d => errorLog += d.toString());
 
   yt.on("close", (code) => {
-    // Debugging: If it fails, we print WHY it failed in the terminal
     if (code !== 0 || !raw) {
-        console.error("❌ YT-DLP Error:", errorLog); 
-        return res.status(500).json({ error: "Video not found or access denied" });
+      console.error("Fetch Info Failed:", errorLog);
+      return res.status(500).json({ error: "Could not find video" });
     }
 
     try {
       const info = JSON.parse(raw);
 
-      const qualities = [...new Set(
-        info.formats
-          .filter(f => f.height && f.vcodec !== "none")
-          .map(f => f.height)
-      )].sort((a, b) => b - a);
+      const qualities = [
+        ...new Set(
+          info.formats
+            .filter(f => f.height && f.vcodec !== "none")
+            .map(f => f.height)
+        )
+      ].sort((a, b) => b - a);
 
       let thumb = info.thumbnail;
       if (!thumb && info.thumbnails?.length) {
         thumb = info.thumbnails.at(-1).url;
       }
 
-      // Check if it's YouTube
+      // Safe Preview Logic
       const isYouTube = info.extractor.includes("youtube");
-
-      // For FB/Insta, try to get a direct MP4 link for preview
       let previewUrl = null;
+      
+      // For FB/Insta/TikTok, send the direct MP4 link if available
       if (!isYouTube) {
-          // Try to find an MP4 file
           const mp4 = info.formats.find(f => f.ext === 'mp4' && f.acodec !== 'none');
-          previewUrl = mp4 ? mp4.url : null;
+          previewUrl = mp4 ? mp4.url : info.url;
       }
 
       res.json({
@@ -88,13 +82,13 @@ exports.getInfo = (req, res) => {
       });
 
     } catch (e) {
-      console.error("Parse Error:", e);
-      res.status(500).json({ error: "Server parse error" });
+      console.error("JSON Parse Error:", e);
+      res.status(500).json({ error: "Parse error" });
     }
   });
 };
 
-/* ───────── DOWNLOAD ───────── */
+/* ───────── DOWNLOAD (Restored to Stable Version) ───────── */
 exports.startDownload = (req, res) => {
   const { url, quality, jobId, title, format } = req.body;
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
@@ -116,20 +110,23 @@ exports.startDownload = (req, res) => {
       "-o", out
   ];
 
-  // 🟢 YOUTUBE FIX
-  if (url.includes("youtube.com") || url.includes("youtu.be")) {
-    args.push("--extractor-args", "youtube:player_client=android");
+  // 🟢 ONLY add Android flag for YouTube Download (It helps prevent throttling)
+  // We do NOT add this to getInfo, only here.
+  if (url.includes("youtube") || url.includes("youtu.be")) {
+      args.push("--extractor-args", "youtube:player_client=android");
   }
 
   if (format === "audio") {
     args.push("-x", "--audio-format", "mp3");
   } else {
-    // 🟢 MOBILE AUDIO FIX (Recode to MP4)
+    // 🟢 SAFE VIDEO FORMAT
     if (quality) {
        args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
     } else {
        args.push("-f", "bestvideo+bestaudio/best");
     }
+    
+    // 🟢 KEEP THIS: Fixes "No Sound" on Mobile (Recodes to MP4/AAC)
     args.push("--recode-video", "mp4");
   }
 
