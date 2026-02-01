@@ -2,8 +2,10 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// 🟢 PRODUCTION PATH (yt-dlp must be in system PATH)
+// 🟢 PRODUCTION PATH (Use "yt-dlp" if it's in your system PATH)
 const YTDLP_BIN = "yt-dlp"; 
+// If that doesn't work, uncomment and use your specific path:
+// const YTDLP_BIN = "C:\\Users\\suvro\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\yt-dlp.exe";
 
 const jobs = {};
 
@@ -20,7 +22,7 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-/* ───────────────── VIDEO INFO ───────────────── */
+/* ───────────────── VIDEO INFO (Fixes "Couldn't find video") ───────────────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
@@ -32,19 +34,22 @@ exports.getInfo = (req, res) => {
     url
   ];
 
-  // 🔴 REMOVED 'android' flag here. 
-  // Standard detection works best for Previews/Metadata on YouTube.
-  // This fixes the "Video Not Found" error.
+  // 🟢 YOUTUBE FIX: REQUIRED for "getInfo" to work.
+  // Without this, YouTube blocks the request as a "Bot".
+  if (url.includes("youtube.com") || url.includes("youtu.be")) {
+     args.push("--extractor-args", "youtube:player_client=android");
+  }
 
   const yt = spawn(YTDLP_BIN, args);
   let raw = "";
 
   yt.stdout.on("data", d => raw += d.toString());
-  // Log error but don't crash
-  yt.stderr.on("data", d => {}); 
+  // Log specific errors to help debugging
+  yt.stderr.on("data", d => console.log("[yt-dlp info error]", d.toString()));
 
   yt.on("close", code => {
     if (code !== 0 || !raw) {
+      console.error("Info Fetch Failed. URL:", url);
       return res.status(500).json({ error: "Could not fetch video info" });
     }
 
@@ -59,7 +64,6 @@ exports.getInfo = (req, res) => {
         )
       ].sort((a, b) => b - a);
 
-      // Smart Preview Finder
       const previewFormat = info.formats.find((f) => 
         f.ext === "mp4" && 
         f.vcodec !== "none" && 
@@ -81,7 +85,8 @@ exports.getInfo = (req, res) => {
         preview: previewUrl 
       });
 
-    } catch {
+    } catch (e) {
+      console.error("JSON Parse Error:", e);
       res.status(500).json({ error: "Parse error" });
     }
   });
@@ -115,8 +120,7 @@ exports.startDownload = (req, res) => {
     outputTemplate,
   ];
 
-  // 🟢 YOUTUBE DOWNLOAD FIX
-  // We keep 'android' HERE because it helps bypass download throttling.
+  // 🟢 YOUTUBE FIX: Required for download
   if (url.includes("youtube.com") || url.includes("youtu.be")) {
     args.push("--extractor-args", "youtube:player_client=android");
   }
@@ -125,15 +129,14 @@ exports.startDownload = (req, res) => {
     args.push("-x", "--audio-format", "mp3");
     jobs[jobId].msg = "Extracting Audio...";
   } else {
-    // 🟢 MOBILE COMPATIBILITY MODE (Universal)
-    // 1. Best Quality Selection
+    // 🟢 MOBILE AUDIO FIX
     if (quality) {
        args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
     } else {
        args.push("-f", "bestvideo+bestaudio/best");
     }
 
-    // 2. Force Recode to MP4 (Fixes Audio/Black Screen on Mobile)
+    // Force MP4 Recode (Fixes audio on phones)
     args.push("--recode-video", "mp4");
     
     jobs[jobId].msg = "Downloading Video...";
