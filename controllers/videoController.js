@@ -2,9 +2,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// ⚠️ IF LOCAL: Use full path. IF HOSTED (Render/Heroku): Keep "yt-dlp"
-const YTDLP = "yt-dlp"; 
-// const YTDLP = "C:\\Users\\suvro\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\yt-dlp.exe";
+const YTDLP = "yt-dlp"; // Or full path if on local Windows
 
 const jobs = {};
 
@@ -12,7 +10,7 @@ const jobs = {};
 setInterval(() => {
   const now = Date.now();
   for (const id in jobs) {
-    if (now - jobs[id].startTime > 60 * 60 * 1000) { // 1 Hour
+    if (now - jobs[id].startTime > 60 * 60 * 1000) { 
       if (jobs[id].filePath && fs.existsSync(jobs[id].filePath)) {
         try { fs.unlinkSync(jobs[id].filePath); } catch {}
       }
@@ -26,12 +24,19 @@ exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
-  const yt = spawn(YTDLP, [
+  const args = [
     "--force-ipv4",
     "--no-playlist",
     "-J",
     url
-  ]);
+  ];
+
+  // 🟢 YOUTUBE FIX: Fixes "Bot Detection" errors
+  if (url.includes("youtube") || url.includes("youtu.be")) {
+     args.push("--extractor-args", "youtube:player_client=android");
+  }
+
+  const yt = spawn(YTDLP, args);
 
   let raw = "";
 
@@ -54,8 +59,6 @@ exports.getInfo = (req, res) => {
         )
       ].sort((a, b) => b - a);
 
-      // 🟢 SMART PREVIEW FINDER (Fixes Facebook/Insta Previews)
-      // Finds a direct MP4 file (<50MB) with both Audio & Video
       const previewFormat = info.formats.find((f) => 
         f.ext === "mp4" && 
         f.vcodec !== "none" && 
@@ -65,7 +68,6 @@ exports.getInfo = (req, res) => {
       );
       const previewUrl = previewFormat ? previewFormat.url : null;
 
-      // Thumbnail Fallback
       let thumb = info.thumbnail;
       if (!thumb && info.thumbnails && info.thumbnails.length > 0) {
         thumb = info.thumbnails[info.thumbnails.length - 1].url;
@@ -76,7 +78,7 @@ exports.getInfo = (req, res) => {
         platform: info.extractor_key,
         qualities,
         thumbnail: thumb,
-        preview: previewUrl // 🟢 Sending direct video link
+        preview: previewUrl 
       });
 
     } catch {
@@ -87,7 +89,7 @@ exports.getInfo = (req, res) => {
 
 /* ───────────────── START DOWNLOAD ───────────────── */
 exports.startDownload = (req, res) => {
-  const { url, quality, jobId, title, format } = req.body; // 🟢 Added 'format'
+  const { url, quality, jobId, title, format } = req.body; 
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
 
   const outputTemplate = path.join(
@@ -113,30 +115,29 @@ exports.startDownload = (req, res) => {
     outputTemplate,
   ];
 
-  // 🟢 LOGIC TO FIX MOBILE AUDIO & FORMATS
+  // 🟢 YOUTUBE FIX: Emulate Android Client
+  if (url.includes("youtube") || url.includes("youtu.be")) {
+    args.push("--extractor-args", "youtube:player_client=android");
+  }
+
   if (format === 'audio') {
-    // 🎵 AUDIO MODE (MP3)
     args.push("-x", "--audio-format", "mp3");
     jobs[jobId].msg = "Extracting Audio...";
   } else {
-    // 📺 VIDEO MODE (MP4 with AAC Audio)
-    // 1. Force H.264 Video & AAC Audio (Compatible with ALL Phones)
+    // Force H.264 Video & AAC Audio (Universal Compatibility)
     args.push("-S", "vcodec:h264,res,acodec:aac");
 
-    // 2. Merge Strategy
     if (quality) {
        args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
     } else {
        args.push("-f", "bestvideo+bestaudio/best");
     }
 
-    // 3. Force MP4 Container
     args.push("--merge-output-format", "mp4");
     
     jobs[jobId].msg = "Downloading Video...";
   }
 
-  // URL must be last
   args.push(url);
 
   const yt = spawn(YTDLP, args);
@@ -154,7 +155,6 @@ exports.startDownload = (req, res) => {
     if (match) {
       jobs[jobId].progress = Number(match[1]);
       jobs[jobId].status = "downloading";
-      // Update msg dynamically
       if (jobs[jobId].progress > 99) jobs[jobId].msg = "Finalizing...";
       else jobs[jobId].msg = format === 'audio' ? "Downloading Audio..." : "Downloading Video...";
     }
@@ -164,7 +164,6 @@ exports.startDownload = (req, res) => {
       if (m) jobs[jobId].filePath = m[1];
     }
     
-    // Handle "Already downloaded" case
     if (text.includes("has already been downloaded")) {
         const m = text.match(/\[download\] (.+) has already been downloaded/);
         if (m) jobs[jobId].filePath = m[1];
@@ -175,7 +174,6 @@ exports.startDownload = (req, res) => {
   yt.on("close", () => {
     const dir = path.join(__dirname, "..");
     const files = fs.readdirSync(dir);
-    // Robust find
     const found = files.find(f => f.startsWith(jobId));
 
     if (found) {
