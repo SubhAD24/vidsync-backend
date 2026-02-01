@@ -3,8 +3,7 @@ const path = require("path");
 const fs = require("fs");
 
 // ⚠️ UPDATE THIS PATH IF NEEDED
-const YTDLP_PATH = "C:\\Users\\suvro\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\yt-dlp.exe";
-
+const YTDLP_BIN = "yt-dlp";
 const jobs = {};
 
 // Clean up old files
