@@ -21,7 +21,7 @@ setInterval(() => {
 /* ───────── INFO ───────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
-  if (!url) return res.status(400).json({ error: "Missing URL" });
+  if (!url) return res.status(400).json({ error: "URL missing" });
 
   const yt = spawn(YTDLP_BIN, ["--force-ipv4", "--no-playlist", "-J", url]);
 
@@ -47,9 +47,6 @@ exports.getInfo = (req, res) => {
         info.extractor === "youtube" ||
         info.extractor_key === "Youtube";
 
-      // ⚠️ IMPORTANT FIX:
-      // YouTube preview is handled ONLY by iframe
-      // No direct preview URL sent
       res.json({
         title: info.title,
         platform: info.extractor_key,
@@ -122,16 +119,16 @@ exports.getProgress = (req, res) => {
   const { jobId } = req.params;
 
   res.setHeader("Content-Type", "text/event-stream");
-  const timer = setInterval(() => {
+  const t = setInterval(() => {
     const job = jobs[jobId];
     if (!job) {
       res.write(`data: {"status":"error"}\n\n`);
-      clearInterval(timer);
+      clearInterval(t);
       return;
     }
     res.write(`data: ${JSON.stringify(job)}\n\n`);
     if (job.status === "done" || job.status === "error") {
-      clearInterval(timer);
+      clearInterval(t);
       res.end();
     }
   }, 500);
@@ -141,6 +138,7 @@ exports.getProgress = (req, res) => {
 exports.downloadFile = (req, res) => {
   const { jobId } = req.params;
   const job = jobs[jobId];
+
   if (!job?.filePath || !fs.existsSync(job.filePath)) {
     return res.status(404).send("File not found");
   }
