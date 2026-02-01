@@ -2,7 +2,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// 🟢 PRODUCTION PATH (As requested)
+// 🟢 PRODUCTION PATH (yt-dlp must be in system PATH)
 const YTDLP_BIN = "yt-dlp"; 
 
 const jobs = {};
@@ -20,7 +20,7 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-/* ───────────────── VIDEO INFO (Fixes Preview) ───────────────── */
+/* ───────────────── VIDEO INFO ───────────────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
@@ -32,18 +32,16 @@ exports.getInfo = (req, res) => {
     url
   ];
 
-  // 🟢 YOUTUBE PREVIEW FIX: Use Android client to bypass "Sign In" check
-  // (Only applied to YouTube URLs to avoid breaking FB/Insta)
-  if (url.includes("youtube.com") || url.includes("youtu.be")) {
-     args.push("--extractor-args", "youtube:player_client=android");
-  }
+  // 🔴 REMOVED 'android' flag here. 
+  // Standard detection works best for Previews/Metadata on YouTube.
+  // This fixes the "Video Not Found" error.
 
-  // 🟢 Using correct binary variable
   const yt = spawn(YTDLP_BIN, args);
   let raw = "";
 
   yt.stdout.on("data", d => raw += d.toString());
-  yt.stderr.on("data", d => console.log("[yt-dlp info log]", d.toString()));
+  // Log error but don't crash
+  yt.stderr.on("data", d => {}); 
 
   yt.on("close", code => {
     if (code !== 0 || !raw) {
@@ -61,6 +59,7 @@ exports.getInfo = (req, res) => {
         )
       ].sort((a, b) => b - a);
 
+      // Smart Preview Finder
       const previewFormat = info.formats.find((f) => 
         f.ext === "mp4" && 
         f.vcodec !== "none" && 
@@ -88,7 +87,7 @@ exports.getInfo = (req, res) => {
   });
 };
 
-/* ───────────────── START DOWNLOAD (Fixes Failed Downloads & Audio) ───────────────── */
+/* ───────────────── START DOWNLOAD ───────────────── */
 exports.startDownload = (req, res) => {
   const { url, quality, jobId, title, format } = req.body; 
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
@@ -116,7 +115,8 @@ exports.startDownload = (req, res) => {
     outputTemplate,
   ];
 
-  // 🟢 YOUTUBE DOWNLOAD FIX: Use Android client
+  // 🟢 YOUTUBE DOWNLOAD FIX
+  // We keep 'android' HERE because it helps bypass download throttling.
   if (url.includes("youtube.com") || url.includes("youtu.be")) {
     args.push("--extractor-args", "youtube:player_client=android");
   }
@@ -125,21 +125,22 @@ exports.startDownload = (req, res) => {
     args.push("-x", "--audio-format", "mp3");
     jobs[jobId].msg = "Extracting Audio...";
   } else {
-    // 🟢 VIDEO MODE: Best quality + Force MP4 Recode (Fixes Mobile Audio)
+    // 🟢 MOBILE COMPATIBILITY MODE (Universal)
+    // 1. Best Quality Selection
     if (quality) {
        args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
     } else {
        args.push("-f", "bestvideo+bestaudio/best");
     }
 
-    // This forces the final file to be standard MP4/AAC
+    // 2. Force Recode to MP4 (Fixes Audio/Black Screen on Mobile)
     args.push("--recode-video", "mp4");
+    
     jobs[jobId].msg = "Downloading Video...";
   }
 
   args.push(url);
 
-  // 🟢 Using correct binary variable
   const yt = spawn(YTDLP_BIN, args);
 
   yt.on("error", err => {
