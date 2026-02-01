@@ -2,39 +2,26 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-const YTDLP = "yt-dlp"; // ✅ DO NOT CHANGE
-
 const jobs = {};
 
-/* ───────────────── CLEANER ───────────────── */
-setInterval(() => {
-  const now = Date.now();
-  for (const id in jobs) {
-    if (now - jobs[id].startTime > 60 * 60 * 1000) {
-      if (jobs[id].filePath && fs.existsSync(jobs[id].filePath)) {
-        try { fs.unlinkSync(jobs[id].filePath); } catch {}
-      }
-      delete jobs[id];
-    }
-  }
-}, 10 * 60 * 1000);
-
-/* ───────────────── VIDEO INFO ───────────────── */
+// =========================
+// GET VIDEO INFO + PREVIEW
+// =========================
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
-  const yt = spawn(YTDLP, [
+  const yt = spawn("yt-dlp", [
     "--force-ipv4",
-    "--no-playlist",
     "-J",
-    url
+    "--no-playlist",
+    url,
   ]);
 
   let raw = "";
 
   yt.stdout.on("data", d => raw += d.toString());
-  yt.stderr.on("data", d => console.log("[yt-dlp]", d.toString()));
+  yt.stderr.on("data", d => console.error("[yt-dlp]", d.toString()));
 
   yt.on("close", code => {
     if (code !== 0 || !raw) {
@@ -44,101 +31,85 @@ exports.getInfo = (req, res) => {
     try {
       const info = JSON.parse(raw);
 
-      const qualities = [
-        ...new Set(
-          info.formats
-            .filter(f => f.height && f.vcodec !== "none")
-            .map(f => f.height)
-        )
-      ].sort((a, b) => b - a);
+      // ✔️ QUALITIES
+      const qualities = [...new Set(
+        info.formats
+          .filter(f => f.height && f.vcodec !== "none")
+          .map(f => f.height)
+      )].sort((a, b) => b - a);
+
+      // ✔️ PREVIEW WITH AUDIO (CRITICAL FIX)
+      const previewFormat = info.formats.find(f =>
+        f.ext === "mp4" &&
+        f.vcodec !== "none" &&
+        f.acodec !== "none" &&
+        f.protocol === "https" &&
+        (!f.filesize || f.filesize < 20_000_000)
+      );
 
       res.json({
         title: info.title,
         platform: info.extractor_key,
         qualities,
-        thumbnail: info.thumbnail || null
+        thumbnail: info.thumbnail,
+        preview: previewFormat ? previewFormat.url : null
       });
 
-    } catch {
+    } catch (e) {
+      console.error(e);
       res.status(500).json({ error: "Parse error" });
     }
   });
 };
 
-/* ───────────────── START DOWNLOAD ───────────────── */
+// =========================
+// START DOWNLOAD (AUDIO FIX)
+// =========================
 exports.startDownload = (req, res) => {
-  const { url, quality, jobId, title } = req.body;
+  const { url, quality, jobId } = req.body;
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
 
-  const outputTemplate = path.join(
-    __dirname,
-    "..",
-    `${jobId}.%(ext)s`
-  );
+  const outDir = path.join(__dirname, "..");
+  const outputTemplate = path.join(outDir, `${jobId}.%(ext)s`);
 
-  jobs[jobId] = {
-    progress: 0,
-    status: "starting",
-    msg: "Initializing…",
-    filePath: null,
-    title: title || "video",
-    startTime: Date.now()
-  };
+  jobs[jobId] = { progress: 0, status: "starting", file: null };
 
+  // 🔥 UNIVERSAL FORMAT FIX (NO MORE SILENT VIDEO)
   const args = [
     "--force-ipv4",
-    "--no-playlist",
     "--newline",
-    "--audio-multistreams",
+    "--no-playlist",
 
-    // 🔥 FACEBOOK + INSTAGRAM + YOUTUBE SAFE FORMAT
     "-f",
-    quality
-      ? `bv*[height<=${quality}]/bv*+ba/best`
-      : "bv*+ba/best",
+    "bv*[vcodec!=?vp9][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
 
     "--merge-output-format",
     "mp4",
 
     "-o",
     outputTemplate,
-
     url
   ];
 
-  const yt = spawn(YTDLP, args);
-
-  yt.on("error", err => {
-    console.error("Spawn error:", err);
-    jobs[jobId].status = "error";
-    jobs[jobId].msg = "Engine error";
-  });
+  const yt = spawn("yt-dlp", args);
 
   yt.stdout.on("data", d => {
-    const text = d.toString();
-
-    const match = text.match(/(\d+\.\d+)%/);
+    const txt = d.toString();
+    const match = txt.match(/(\d+\.\d+)%/);
     if (match) {
       jobs[jobId].progress = Number(match[1]);
       jobs[jobId].status = "downloading";
-      jobs[jobId].msg = "Downloading…";
-    }
-
-    if (text.includes("Destination:")) {
-      const m = text.match(/Destination: (.+)$/m);
-      if (m) jobs[jobId].filePath = m[1];
     }
   });
 
-  yt.on("close", () => {
-    const files = fs.readdirSync(path.join(__dirname, ".."));
-    const found = files.find(f => f.startsWith(jobId));
+  yt.stderr.on("data", d => console.error("[download]", d.toString()));
 
-    if (found) {
-      jobs[jobId].filePath = path.join(__dirname, "..", found);
+  yt.on("close", () => {
+    const file = fs.readdirSync(outDir).find(f => f.startsWith(jobId));
+    if (file) {
+      jobs[jobId].file = path.join(outDir, file);
       jobs[jobId].progress = 100;
       jobs[jobId].status = "done";
-      jobs[jobId].msg = "Ready";
     } else {
       jobs[jobId].status = "error";
     }
@@ -147,7 +118,9 @@ exports.startDownload = (req, res) => {
   res.json({ started: true });
 };
 
-/* ───────────────── PROGRESS STREAM ───────────────── */
+// =========================
+// PROGRESS (SSE)
+// =========================
 exports.getProgress = (req, res) => {
   const { jobId } = req.params;
 
@@ -157,11 +130,7 @@ exports.getProgress = (req, res) => {
 
   const timer = setInterval(() => {
     const job = jobs[jobId];
-    if (!job) {
-      res.write(`data: ${JSON.stringify({ status: "error" })}\n\n`);
-      clearInterval(timer);
-      return;
-    }
+    if (!job) return;
 
     res.write(`data: ${JSON.stringify(job)}\n\n`);
 
@@ -172,20 +141,19 @@ exports.getProgress = (req, res) => {
   }, 500);
 };
 
-/* ───────────────── FILE DOWNLOAD ───────────────── */
+// =========================
+// DOWNLOAD FILE
+// =========================
 exports.downloadFile = (req, res) => {
   const { jobId } = req.params;
   const job = jobs[jobId];
 
-  if (!job || !job.filePath || !fs.existsSync(job.filePath)) {
-    return res.status(404).send("File not found");
+  if (!job || !job.file || !fs.existsSync(job.file)) {
+    return res.status(404).send("File missing");
   }
 
-  const safeName = job.title.replace(/[^a-z0-9 _-]/gi, "_");
-  const ext = path.extname(job.filePath);
-
-  res.download(job.filePath, `${safeName}${ext}`, () => {
-    try { fs.unlinkSync(job.filePath); } catch {}
+  res.download(job.file, err => {
+    if (!err) fs.unlink(job.file, () => {});
     delete jobs[jobId];
   });
 };
