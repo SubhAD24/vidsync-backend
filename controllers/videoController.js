@@ -2,7 +2,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-const YTDLP_BIN = "yt-dlp";
+const YTDLP_BIN = "yt-dlp"; // ✅ Using System Path
 const jobs = {};
 
 /* ───────── CLEANER ───────── */
@@ -18,17 +18,40 @@ setInterval(() => {
   }
 }, 600000);
 
-/* ───────── INFO ───────── */
+/* ───────── INFO (The Fix for "Video Not Found") ───────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
-  const yt = spawn(YTDLP_BIN, ["--force-ipv4", "--no-playlist", "-J", url]);
+  const args = [
+    "--force-ipv4",
+    "--no-playlist",
+    "-J",
+    // 🟢 FIX 1: Fake a real browser (Helps FB/Insta)
+    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    url
+  ];
+
+  // 🟢 FIX 2: Mimic Android Client (Helps YouTube)
+  // We MUST do this here, otherwise YouTube returns "Sign in required"
+  if (url.includes("youtube") || url.includes("youtu.be")) {
+     args.push("--extractor-args", "youtube:player_client=android");
+  }
+
+  const yt = spawn(YTDLP_BIN, args);
 
   let raw = "";
+  let errorLog = "";
+
   yt.stdout.on("data", d => raw += d.toString());
+  yt.stderr.on("data", d => errorLog += d.toString());
 
   yt.on("close", () => {
+    if (!raw) {
+        console.error("Fetch Failed:", errorLog); 
+        return res.status(500).json({ error: "Video not found or blocked" });
+    }
+
     try {
       const info = JSON.parse(raw);
 
@@ -43,18 +66,27 @@ exports.getInfo = (req, res) => {
         thumb = info.thumbnails.at(-1).url;
       }
 
-      const isYouTube =
-        info.extractor === "youtube" ||
-        info.extractor_key === "Youtube";
+      // 🟢 SMART PREVIEW
+      // For YouTube, we return NULL because frontend handles the Iframe.
+      // For FB/Insta, we try to get the direct MP4 link.
+      const isYouTube = info.extractor.includes("youtube");
+      
+      // Find a safe preview for FB/Insta
+      let previewUrl = null;
+      if (!isYouTube) {
+          const mp4Format = info.formats.find(f => f.ext === 'mp4' && f.acodec !== 'none' && f.vcodec !== 'none');
+          previewUrl = mp4Format ? mp4Format.url : info.url;
+      }
 
       res.json({
         title: info.title,
         platform: info.extractor_key,
         qualities,
         thumbnail: thumb,
-        preview: isYouTube ? null : info.url || null
+        preview: previewUrl
       });
-    } catch {
+    } catch (e) {
+      console.error("Parse Error:", e);
       res.status(500).json({ error: "Parse error" });
     }
   });
@@ -75,18 +107,29 @@ exports.startDownload = (req, res) => {
     startTime: Date.now()
   };
 
-  const args = ["--force-ipv4", "--no-playlist", "--newline", "-o", out];
+  const args = [
+      "--force-ipv4", 
+      "--no-playlist", 
+      "--newline", 
+      "-o", out,
+      // 🟢 FIX 1: Fake Browser for Download too
+      "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+  ];
 
-  if (url.includes("youtube")) {
+  if (url.includes("youtube") || url.includes("youtu.be")) {
     args.push("--extractor-args", "youtube:player_client=android");
   }
 
   if (format === "audio") {
     args.push("-x", "--audio-format", "mp3");
   } else {
+    // 🟢 FIX 3: Mobile Audio Logic
     if (quality) {
-      args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best`);
+      args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
+    } else {
+        args.push("-f", "bestvideo+bestaudio/best");
     }
+    // Force Recode to MP4 (Fixes "No Sound" on Mobile)
     args.push("--recode-video", "mp4");
   }
 
@@ -119,10 +162,13 @@ exports.getProgress = (req, res) => {
   const { jobId } = req.params;
 
   res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
   const t = setInterval(() => {
     const job = jobs[jobId];
     if (!job) {
-      res.write(`data: {"status":"error"}\n\n`);
+      res.write(`data: ${JSON.stringify({status:"error"})}\n\n`);
       clearInterval(t);
       return;
     }
