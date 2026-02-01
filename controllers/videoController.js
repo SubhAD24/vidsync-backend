@@ -4,18 +4,45 @@ const fs = require("fs");
 
 const jobs = {};
 
-// =========================
-// GET VIDEO INFO + PREVIEW
-// =========================
+/* ===============================
+   URL NORMALIZER (CRITICAL)
+================================ */
+function normalizeUrl(url) {
+  if (!url) return url;
+
+  // YouTube Shorts → Watch
+  if (url.includes("youtube.com/shorts/")) {
+    const id = url.split("/shorts/")[1].split("?")[0];
+    return `https://www.youtube.com/watch?v=${id}`;
+  }
+
+  // Instagram Reels → keep clean
+  if (url.includes("instagram.com")) {
+    return url.split("?")[0];
+  }
+
+  // Facebook short links
+  if (url.includes("fb.watch")) {
+    return url;
+  }
+
+  return url;
+}
+
+/* ===============================
+   GET VIDEO INFO
+================================ */
 exports.getInfo = (req, res) => {
-  const { url } = req.body;
+  let { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
+  url = normalizeUrl(url);
+
   const yt = spawn("yt-dlp", [
-    "--force-ipv4",
-    "-J",
+    "--dump-single-json",
     "--no-playlist",
-    url,
+    "--force-ipv4",
+    url
   ]);
 
   let raw = "";
@@ -24,92 +51,75 @@ exports.getInfo = (req, res) => {
   yt.stderr.on("data", d => console.error("[yt-dlp]", d.toString()));
 
   yt.on("close", code => {
-    if (code !== 0 || !raw) {
-      return res.status(500).json({ error: "Could not fetch video info" });
+    if (!raw) {
+      return res.status(500).json({ error: "Could not find video" });
     }
 
     try {
       const info = JSON.parse(raw);
 
-      // ✔️ QUALITIES
       const qualities = [...new Set(
         info.formats
-          .filter(f => f.height && f.vcodec !== "none")
+          .filter(f => f.height && f.acodec !== "none")
           .map(f => f.height)
       )].sort((a, b) => b - a);
-
-      // ✔️ PREVIEW WITH AUDIO (CRITICAL FIX)
-      const previewFormat = info.formats.find(f =>
-        f.ext === "mp4" &&
-        f.vcodec !== "none" &&
-        f.acodec !== "none" &&
-        f.protocol === "https" &&
-        (!f.filesize || f.filesize < 20_000_000)
-      );
 
       res.json({
         title: info.title,
         platform: info.extractor_key,
         qualities,
-        thumbnail: info.thumbnail,
-        preview: previewFormat ? previewFormat.url : null
+        thumbnail: info.thumbnail
       });
-
     } catch (e) {
       console.error(e);
-      res.status(500).json({ error: "Parse error" });
+      res.status(500).json({ error: "Parse failed" });
     }
   });
 };
 
-// =========================
-// START DOWNLOAD (AUDIO FIX)
-// =========================
+/* ===============================
+   START DOWNLOAD (AUDIO FIXED)
+================================ */
 exports.startDownload = (req, res) => {
-  const { url, quality, jobId } = req.body;
+  let { url, quality, jobId } = req.body;
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
 
+  url = normalizeUrl(url);
+
   const outDir = path.join(__dirname, "..");
-  const outputTemplate = path.join(outDir, `${jobId}.%(ext)s`);
+  const output = path.join(outDir, `${jobId}.%(ext)s`);
 
-  jobs[jobId] = { progress: 0, status: "starting", file: null };
+  jobs[jobId] = {
+    progress: 0,
+    status: "starting",
+    filePath: null
+  };
 
-  // 🔥 UNIVERSAL FORMAT FIX (NO MORE SILENT VIDEO)
-  const args = [
-    "--force-ipv4",
+  const yt = spawn("yt-dlp", [
     "--newline",
+    "--force-ipv4",
     "--no-playlist",
-
     "-f",
-    "bv*[vcodec!=?vp9][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
-
+    `bv*[height<=${quality}]+ba/b`,
     "--merge-output-format",
     "mp4",
-
     "-o",
-    outputTemplate,
+    output,
     url
-  ];
-
-  const yt = spawn("yt-dlp", args);
+  ]);
 
   yt.stdout.on("data", d => {
-    const txt = d.toString();
-    const match = txt.match(/(\d+\.\d+)%/);
-    if (match) {
-      jobs[jobId].progress = Number(match[1]);
-      jobs[jobId].status = "downloading";
-    }
+    const t = d.toString();
+    const m = t.match(/(\d+\.\d+)%/);
+    if (m) jobs[jobId].progress = Number(m[1]);
   });
-
-  yt.stderr.on("data", d => console.error("[download]", d.toString()));
 
   yt.on("close", () => {
     const file = fs.readdirSync(outDir).find(f => f.startsWith(jobId));
     if (file) {
-      jobs[jobId].file = path.join(outDir, file);
-      jobs[jobId].progress = 100;
+      jobs[jobId].filePath = path.join(outDir, file);
       jobs[jobId].status = "done";
+      jobs[jobId].progress = 100;
     } else {
       jobs[jobId].status = "error";
     }
@@ -118,9 +128,9 @@ exports.startDownload = (req, res) => {
   res.json({ started: true });
 };
 
-// =========================
-// PROGRESS (SSE)
-// =========================
+/* ===============================
+   PROGRESS STREAM
+================================ */
 exports.getProgress = (req, res) => {
   const { jobId } = req.params;
 
@@ -129,31 +139,29 @@ exports.getProgress = (req, res) => {
   res.setHeader("Connection", "keep-alive");
 
   const timer = setInterval(() => {
-    const job = jobs[jobId];
-    if (!job) return;
+    if (!jobs[jobId]) return;
+    res.write(`data: ${JSON.stringify(jobs[jobId])}\n\n`);
 
-    res.write(`data: ${JSON.stringify(job)}\n\n`);
-
-    if (job.status === "done" || job.status === "error") {
+    if (jobs[jobId].status === "done") {
       clearInterval(timer);
       res.end();
     }
-  }, 500);
+  }, 1000);
 };
 
-// =========================
-// DOWNLOAD FILE
-// =========================
+/* ===============================
+   FILE DOWNLOAD
+================================ */
 exports.downloadFile = (req, res) => {
   const { jobId } = req.params;
   const job = jobs[jobId];
 
-  if (!job || !job.file || !fs.existsSync(job.file)) {
-    return res.status(404).send("File missing");
+  if (!job || !fs.existsSync(job.filePath)) {
+    return res.status(404).send("File not found");
   }
 
-  res.download(job.file, err => {
-    if (!err) fs.unlink(job.file, () => {});
+  res.download(job.filePath, () => {
+    fs.unlinkSync(job.filePath);
     delete jobs[jobId];
   });
 };
