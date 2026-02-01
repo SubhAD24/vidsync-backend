@@ -2,7 +2,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
-// 🟢 PRODUCTION PATH (System Default)
+// 🟢 PRODUCTION PATH
 const YTDLP_BIN = "yt-dlp";
 
 const jobs = {};
@@ -20,37 +20,47 @@ setInterval(() => {
   }
 }, 600000);
 
-/* ───────── INFO (Unchanged - Working) ───────── */
+/* ───────── INFO ───────── */
 exports.getInfo = (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: "URL missing" });
 
-  const args = ["--force-ipv4", "--no-playlist", "-J", url];
-  // Note: We do NOT use the android flag here because it breaks FB/Insta previews.
+  const args = [
+    "--force-ipv4",
+    "--no-playlist",
+    "-J",
+    url
+  ];
 
   const yt = spawn(YTDLP_BIN, args);
+
   let raw = "";
+  let errorLog = "";
 
   yt.stdout.on("data", d => raw += d.toString());
-  
+  yt.stderr.on("data", d => errorLog += d.toString());
+
   yt.on("close", (code) => {
     if (code !== 0 || !raw) {
-      return res.status(500).json({ error: "Could not fetch info" });
+      console.error("Fetch Info Failed:", errorLog);
+      return res.status(500).json({ error: "Could not find video" });
     }
+
     try {
       const info = JSON.parse(raw);
-      const qualities = [...new Set(
-        info.formats
-          .filter(f => f.height && f.vcodec !== "none")
-          .map(f => f.height)
-      )].sort((a, b) => b - a);
+      const qualities = [
+        ...new Set(
+          info.formats
+            .filter(f => f.height && f.vcodec !== "none")
+            .map(f => f.height)
+        )
+      ].sort((a, b) => b - a);
 
       let thumb = info.thumbnail;
       if (!thumb && info.thumbnails?.length) {
         thumb = info.thumbnails.at(-1).url;
       }
 
-      // Logic: For FB/Insta, prefer direct MP4. For YT, frontend handles iframe.
       const isYouTube = info.extractor.includes("youtube");
       let previewUrl = null;
       if (!isYouTube) {
@@ -66,12 +76,13 @@ exports.getInfo = (req, res) => {
         preview: previewUrl 
       });
     } catch (e) {
+      console.error("JSON Parse Error:", e);
       res.status(500).json({ error: "Parse error" });
     }
   });
 };
 
-/* ───────── DOWNLOAD (YouTube Fix Added) ───────── */
+/* ───────── DOWNLOAD (iOS Fix Added) ───────── */
 exports.startDownload = (req, res) => {
   const { url, quality, jobId, title, format } = req.body;
   if (!url || !jobId) return res.status(400).json({ error: "Missing fields" });
@@ -86,23 +97,33 @@ exports.startDownload = (req, res) => {
     startTime: Date.now()
   };
 
-  const args = ["--force-ipv4", "--no-playlist", "--newline", "-o", out];
+  const args = [
+      "--force-ipv4", 
+      "--no-playlist", 
+      "--newline", 
+      "-o", out
+  ];
 
-  // 🟢 YOUTUBE DOWNLOAD FIX
-  // This tells YouTube we are a mobile app, so it allows the download.
-  if (url.includes("youtube.com") || url.includes("youtu.be")) {
+  // YouTube Fix for Android/iOS Throttling
+  if (url.includes("youtube") || url.includes("youtu.be")) {
       args.push("--extractor-args", "youtube:player_client=android");
   }
 
   if (format === "audio") {
     args.push("-x", "--audio-format", "mp3");
   } else {
-    // 🟢 MOBILE AUDIO FIX
+    // 🟢 iOS BLACK SCREEN FIX
+    // We explicitly prefer "h264" codec. iOS HATES VP9 (the default).
+    // This sorting rule tells yt-dlp to find the best H.264 video.
+    args.push("-S", "vcodec:h264");
+
     if (quality) {
        args.push("-f", `bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best`);
     } else {
        args.push("-f", "bestvideo+bestaudio/best");
     }
+    
+    // Ensure container is always MP4
     args.push("--recode-video", "mp4");
   }
 
@@ -136,6 +157,7 @@ exports.getProgress = (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+
   const t = setInterval(() => {
     const job = jobs[jobId];
     if (!job) {
@@ -156,8 +178,10 @@ exports.downloadFile = (req, res) => {
   const { jobId } = req.params;
   const job = jobs[jobId];
   if (!job?.filePath || !fs.existsSync(job.filePath)) return res.status(404).send("File not found");
+  
   const safe = job.title.replace(/[^a-z0-9 _-]/gi, "_");
   const ext = path.extname(job.filePath);
+  
   res.download(job.filePath, `${safe}${ext}`, () => {
     try { fs.unlinkSync(job.filePath); } catch {}
     delete jobs[jobId];
