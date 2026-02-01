@@ -1,15 +1,16 @@
 const express = require("express");
 const cors = require("cors");
-const videoRoutes = require("./routes/videoRoutes");
+const video = require("./controllers/videoController");
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
-app.use("/api", videoRoutes);
+app.post("/api/info", video.getInfo);
+app.post("/api/download", video.startDownload);
+app.get("/api/progress/:jobId", video.getProgress);
+app.get("/api/file/:jobId", video.downloadFile);
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log("🚀 Backend running on port", PORT);
+app.listen(5000, () => {
+  console.log("✅ Server running on http://localhost:5000");
 });
